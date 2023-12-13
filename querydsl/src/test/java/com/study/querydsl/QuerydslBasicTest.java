@@ -1,16 +1,20 @@
 package com.study.querydsl;
 
 
+import com.querydsl.core.BooleanBuilder;
 import com.querydsl.core.QueryResults;
 import com.querydsl.core.Tuple;
 import com.querydsl.core.types.Expression;
 import com.querydsl.core.types.ExpressionUtils;
+import com.querydsl.core.types.Predicate;
 import com.querydsl.core.types.Projections;
+import com.querydsl.core.types.dsl.BooleanExpression;
 import com.querydsl.core.types.dsl.CaseBuilder;
 import com.querydsl.core.types.dsl.Expressions;
 import com.querydsl.jpa.JPAExpressions;
 import com.querydsl.jpa.impl.JPAQueryFactory;
 import com.study.querydsl.dto.MemberDto;
+import com.study.querydsl.dto.QMemberDto;
 import com.study.querydsl.dto.UserDto;
 import com.study.querydsl.entity.Member;
 import com.study.querydsl.entity.QMember;
@@ -659,6 +663,7 @@ public class QuerydslBasicTest {
     @Test
     public void findDtoByConstructorUserDto(){
         //생성자를 호출하여 생성한다 ( 순서에 맞추면 되기 때문에 별칭 필요 없다 )
+        //코드가 실행하는 순간에서야 문제를 찾을 수 있다 ( RunTime 오류 )
         List<UserDto> result = queryFactory
                 .select(Projections.constructor(UserDto.class,
                         member.username,
@@ -671,5 +676,197 @@ public class QuerydslBasicTest {
         }
     }
 
+    @Test
+    public void findDtoByQueryProjection(){
+        // QueryProjection의 경우 Q 파일 생성하기 때문에! ( 컴파일 오류! )
+        // 단점이 Q파일을 생성해야한다
+        // MemberDto 자체가 Querydsl의 의존성이 추가된다!
+        // MemberDto 가 Service Repository Cotroller 에서도 쓰이는데 Querydsl 의존성이 추가되기 때문에 아키텍쳐의 설계 고민..
+        List<MemberDto> result = queryFactory
+                .select(new QMemberDto(member.username, member.age))
+                .from(member)
+                .fetch();
+
+        for(MemberDto memberDto : result){
+            System.out.println("memberDto " + memberDto);
+        }
+
+    }
+
+    /**
+     * 동적 쿼리 ( BooleanBuilder )
+     */
+    @Test
+    public void dynamicQuery_BooleanBuilder(){
+        String usernameParam = "member1";
+        Integer ageParam = 10;
+
+        List <Member> result = searchMember1(usernameParam, ageParam);
+        assertThat(result.size()).isEqualTo(1);
+    }
+
+    private List<Member> searchMember1(String usernameCond, Integer ageCond) {
+        //memberusername 이 필수다!! 아래와 같이 초기값을 줄 수 있다.
+        //BooleanBuilder builder = new BooleanBuilder(member.username.eq(usernameCond));
+        BooleanBuilder builder = new BooleanBuilder();
+
+        if(usernameCond != null){
+            builder.and(member.username.eq(usernameCond));
+        }
+        if(ageCond != null){
+            builder.and(member.age.eq(ageCond));
+        }
+
+        return queryFactory
+                .selectFrom(member)
+                .where(builder)
+                .fetch();
+
+    }
+
+    /**
+     * 동적 쿼리 ( Where문 다중 파라미터 )
+     */
+    @Test
+    public void dynamicQuery_WhereParam(){
+        String usernameParam = "member1";
+        Integer ageParam = 10;
+
+        List <Member> result = searchMember2(usernameParam, ageParam);
+        assertThat(result.size()).isEqualTo(1);
+    }
+
+    //아래와 같은 방법은
+    //Wher 조건에 null 값은 무시된다 ( null 체크는 주의해서 사용해야한다!! )
+    //메서드 다른 쿼리에서도 재활용 가능
+    //쿼리 자체의 가독성을 높인다.
+
+    private List<Member> searchMember2(String usernameCond, Integer ageCond) {
+        return queryFactory
+                .selectFrom(member)
+                //.where(usernameEq(usernameCond), ageEq(ageCond))
+                .where(allEq(usernameCond, ageCond))
+                .fetch();
+    }
+
+    private Predicate allEq(String ussernameCond, Integer ageCond){
+        //null 처리 해줘야하긴하다!
+        return usernameEq(ussernameCond).and(ageEq(ageCond));
+    }
+
+    //private Predicate ageEq(Integer ageCond){
+    private BooleanExpression ageEq(Integer ageCond) {
+        return ageCond == null ? null : member.age.eq(ageCond);
+    }
+
+    private BooleanExpression usernameEq(String usernameCond) {
+        if(usernameCond == null) return null;
+        return member.username.eq(usernameCond);
+    }
+
+
+    /**
+     * 수정, 삭제 배치 쿼리
+     * 쿼리 한번에 대량 데이터 수정! ( 벌크 연산 )
+     * 변경 감지.. 한쿼리로 처리하면
+     */
+    @Test
+    public void bulkUpdate(){
+
+        //member1 = 10 -> DB member1
+        //member2 = 20 -> DB member2
+        //member3 = 30 -> DB member3
+        //member4 = 40 -> DB member4
+
+        //Jpa는 영속성 컨텍스트에 Entity가 올라가있는다
+        //현재 member 1 2 3 4 가 올라가 있는 상태이다.
+        //벌크 연산은 영속성 컨텍스트를 무시하고 DB에 바로 실행
+        //즉. DB와 영속성 컨텍스트와 값이 달라진다!
+
+        long count = queryFactory
+                .update(member)
+                .set(member.username, "비회원")
+                .where(member.age.lt(28))
+                .execute();
+
+        //1 member1 = 10 -> 1 DB 비회원
+        //2 member2 = 20 -> 2 DB 비회원
+        //3 member3 = 30 -> 3 DB member3
+        //4 member4 = 40 -> 4 DB member4
+        
+        //Select 해서 DB에서 가져와도! 이미 영속성 컨텍스트에 값이 있으면
+        //영속성 컨텍스트가 우선 순위로 영속성 컨텍스 안에 있는 값을 출력 한다!
+        //( DB에서 가져온값을 버리고 영속성 컨텍스 값을 가져옴 )
+
+        //따라서.  벌크 연산을 했다면! -> 영속성 컨텍스를 날려라!
+        em.flush();
+        em.clear();
+
+        List<Member> result = queryFactory
+                .selectFrom(member)
+                .fetch();
+
+        for(Member member1 : result){
+            System.out.println("member1 = " + member1);
+        }
+    }
+
+    /**
+     * 연산 - 벌크연산 ( 더하기 , 곱하기 )
+     */
+    @Test
+    public void blukAdd(){
+        long count = queryFactory
+                .update(member)
+                .set(member.age, member.age.add(1))   //곱하기 .multiply(2)
+                .execute();
+
+    }
+
+    /**
+     * 삭제 - 벌크 연산
+     */
+    @Test
+    public void bulkDelete(){
+        long count = queryFactory
+                .delete(member)
+                .where(member.age.gt(18))
+                .execute();
+    }
+
+    /**
+     * SQL function 호출
+     */
+    @Test
+    public void sqlFunction(){
+        // H2를 사용하기 때문에 function 을 사용하려면
+        // H2 Direct 에 registeFunction 에 등록되어 있어야한다!
+        List<String> result = queryFactory
+                .select(Expressions.stringTemplate(
+                        "function('replace', {0}, {1}, {2})",
+                        member.username, "member", "M"))
+                .from(member)
+                .fetch();
+
+        for(String s : result){
+            System.out.println("s = " + s);
+        }
+    }
+
+    @Test
+    public void sqlFunction2(){
+        List<String> result = queryFactory
+                .select(member.username)
+                .from(member)
+//                .where(member.username.eq(
+//                        Expressions.stringTemplate("function('lower', {0})", member.username)))
+                .where(member.username.eq(member.username.lower()))
+                .fetch();
+
+        for (String s: result){
+            System.out.println("s = " + s);
+        }
+    }
 
 }
+
