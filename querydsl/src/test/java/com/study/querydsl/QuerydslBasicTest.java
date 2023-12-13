@@ -462,7 +462,7 @@ public class QuerydslBasicTest {
         List<Tuple> result = queryFactory
                 .select(member.username,
                         JPAExpressions
-                                .select(memberSub.age)
+                                .select(memberSub.age.avg())
                                 .from(memberSub))
                 .from(member)
                 .fetch();
